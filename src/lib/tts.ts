@@ -80,6 +80,26 @@ function buildWords(text: string, alignment: Alignment): WordSpan[] {
   return words;
 }
 
+export function buildWordsFromText(text: string): WordSpan[] {
+  const words: WordSpan[] = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && /\s/.test(text[i])) i++;
+    if (i >= n) break;
+    const wStart = i;
+    while (i < n && !/\s/.test(text[i])) i++;
+    words.push({
+      text: text.slice(wStart, i),
+      charStart: wStart,
+      charEnd: i,
+      timeStart: 0,
+      timeEnd: 0,
+    });
+  }
+  return words;
+}
+
 export function chunkText(text: string, maxLen = 1200): string[] {
   // Split on paragraph then sentence boundaries, keeping chunks <= maxLen.
   const paragraphs = text.split(/\n\s*\n/);
