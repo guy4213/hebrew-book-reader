@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useState, useRef } from "react";
-import { ArrowRight, Camera, FileText, Loader2, Upload, BookOpen } from "lucide-react";
+import { ArrowRight, Camera, FileText, Loader2, Upload, BookOpen, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,9 +23,37 @@ function AddBookPage() {
 
   const [identifying, setIdentifying] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const pagesInputRef = useRef<HTMLInputElement>(null);
   const textFileRef = useRef<HTMLInputElement>(null);
+
+  const fetchBookContent = async (t = title, a = author) => {
+    if (!t.trim()) return toast.error("יש להזין שם ספר תחילה");
+    setFetching(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("fetch-book-content", {
+        body: { title: t.trim(), author: a.trim() || undefined },
+      });
+      if (error) throw error;
+      if (data?.status === "ok" && data?.text) {
+        setContent(data.text);
+        toast.success(`נטען טקסט הספר`, {
+          description: `מקור: ${data.source}${data.url ? " — " + data.url : ""}`,
+        });
+        return true;
+      }
+      toast.warning("לא הצלחנו לשלוף את הספר אוטומטית", {
+        description: data?.reason || "הספר ככל הנראה מוגן בזכויות יוצרים. אפשר להעלות קובץ טקסט או לצלם את העמודים.",
+      });
+      return false;
+    } catch (err: any) {
+      toast.error("שגיאה בשליפת תוכן", { description: String(err?.message ?? err) });
+      return false;
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const handleCoverUpload = async (file: File) => {
     const dataUrl = await fileToDataUrl(file);
@@ -40,6 +68,8 @@ function AddBookPage() {
         setTitle(data.title);
         if (data.author) setAuthor(data.author);
         toast.success(`זוהה: ${data.title}${data.author ? " — " + data.author : ""}`);
+        // נסה אוטומטית לשלוף את תוכן הספר
+        await fetchBookContent(data.title, data.author || "");
       } else {
         toast.warning("לא הצלחנו לזהות את הספר אוטומטית. הקלידו ידנית.");
       }
@@ -179,6 +209,18 @@ function AddBookPage() {
             </div>
             <h2 className="text-lg font-bold">תוכן הספר להקראה</h2>
           </div>
+
+          <Button
+            onClick={() => fetchBookContent()}
+            disabled={fetching || !title.trim()}
+            className="w-full gap-2 mb-3"
+          >
+            {fetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            שלוף את הספר אוטומטית לפי שם
+          </Button>
+          <p className="text-xs text-muted-foreground mb-4 text-center">
+            מחפש בפרויקט בן-יהודה ובמאגרי טקסטים בנחלת הכלל. ספרים מוגנים בזכויות יוצרים — העלו קובץ או צלמו עמודים.
+          </p>
 
           <div className="grid sm:grid-cols-2 gap-3 mb-4">
             <Button
