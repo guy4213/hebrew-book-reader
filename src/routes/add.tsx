@@ -68,6 +68,8 @@ function AddBookPage() {
         setTitle(data.title);
         if (data.author) setAuthor(data.author);
         toast.success(`זוהה: ${data.title}${data.author ? " — " + data.author : ""}`);
+        // נסה אוטומטית לשלוף את תוכן הספר
+        await fetchBookContent(data.title, data.author || "");
       } else {
         toast.warning("לא הצלחנו לזהות את הספר אוטומטית. הקלידו ידנית.");
       }
