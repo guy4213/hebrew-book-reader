@@ -15,7 +15,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { library, type Book } from "@/lib/library";
-import { generateTTS, chunkText, HEBREW_VOICES, type WordSpan } from "@/lib/tts";
+import { generateTTS, chunkText, buildWordsFromText, HEBREW_VOICES, type WordSpan } from "@/lib/tts";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -39,6 +39,7 @@ export const Route = createFileRoute("/reader/$id")({
 });
 
 type ViewMode = "book" | "plain";
+type TtsProvider = "elevenlabs" | "browser";
 
 function ReaderPage() {
   const { id } = useParams({ from: "/reader/$id" });
@@ -62,7 +63,16 @@ function ReaderPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("plain");
   const [theme, setTheme] = useState<"cream" | "white" | "dark">("cream");
 
+  const [ttsProvider, setTtsProvider] = useState<TtsProvider>("elevenlabs");
+  const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [browserVoiceURI, setBrowserVoiceURI] = useState<string>("");
+
   const audioRef = useRef<HTMLAudioElement>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const shouldAutostartBrowserRef = useRef(false);
+  // Always-fresh snapshot of values used inside event callbacks
+  const liveRef = useRef({ speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx });
+  liveRef.current = { speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx };
 
   // Load book from storage
   useEffect(() => {
@@ -75,9 +85,88 @@ function ReaderPage() {
     setBook(b);
   }, [id, navigate]);
 
-  // When chunk changes (or voice/speed), generate audio
+  // Start browser TTS for a chunk
+  const speakChunk = (text: string, wordSpans: WordSpan[]) => {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "he-IL";
+    const live = liveRef.current;
+    utterance.rate = Math.min(Math.max(live.speed, 0.1), 10);
+    utterance.volume = live.volume;
+    const voice = live.browserVoices.find(v => v.voiceURI === live.browserVoiceURI);
+    if (voice) utterance.voice = voice;
+
+    utterance.onboundary = (e: SpeechSynthesisEvent) => {
+      if (e.name !== "word") return;
+      const idx = wordSpans.findIndex(w => e.charIndex >= w.charStart && e.charIndex < w.charEnd);
+      if (idx !== -1) setCurrentWordIdx(idx);
+    };
+
+    utterance.onend = () => {
+      const { chunks: cs, chunkIdx: ci } = liveRef.current;
+      if (ci + 1 < cs.length) {
+        shouldAutostartBrowserRef.current = true;
+        setChunkIdx(ci + 1);
+      } else {
+        setPlaying(false);
+      }
+    };
+
+    utteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+    setPlaying(true);
+  };
+
+  // Load browser voices
   useEffect(() => {
-    if (!book || chunks.length === 0) return;
+    if (ttsProvider !== "browser") return;
+    const loadVoices = () => {
+      const all = window.speechSynthesis.getVoices();
+      const hebrew = all.filter(v => v.lang.startsWith("he"));
+      const available = hebrew.length > 0 ? hebrew : all;
+      setBrowserVoices(available);
+      setBrowserVoiceURI(prev => prev || available[0]?.voiceURI || "");
+    };
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => { window.speechSynthesis.onvoiceschanged = null; };
+  }, [ttsProvider]);
+
+  // Stop browser TTS when switching to ElevenLabs
+  useEffect(() => {
+    if (ttsProvider === "elevenlabs") {
+      window.speechSynthesis.cancel();
+      setPlaying(false);
+      setCurrentWordIdx(-1);
+    }
+  }, [ttsProvider]);
+
+  // Browser TTS: compute words when chunk changes and auto-start if needed
+  useEffect(() => {
+    if (ttsProvider !== "browser" || !book || chunks.length === 0) return;
+    window.speechSynthesis.cancel();
+    setCurrentWordIdx(-1);
+    setAudioUrl(null);
+    const wordSpans = buildWordsFromText(chunks[chunkIdx]);
+    setWords(wordSpans);
+    if (shouldAutostartBrowserRef.current) {
+      shouldAutostartBrowserRef.current = false;
+      speakChunk(chunks[chunkIdx], wordSpans);
+    } else {
+      setPlaying(false);
+    }
+    // speakChunk reads from liveRef so it's intentionally omitted from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsProvider, chunks, chunkIdx, book]);
+
+  // Cleanup browser TTS on unmount
+  useEffect(() => {
+    return () => { window.speechSynthesis.cancel(); };
+  }, []);
+
+  // When chunk changes (or voice/speed), generate audio — ElevenLabs only
+  useEffect(() => {
+    if (ttsProvider !== "elevenlabs" || !book || chunks.length === 0) return;
     let cancelled = false;
     setLoading(true);
     setAudioUrl(null);
@@ -101,7 +190,7 @@ function ReaderPage() {
     return () => {
       cancelled = true;
     };
-  }, [chunks, chunkIdx, voiceId, book]);
+  }, [chunks, chunkIdx, voiceId, book, ttsProvider]);
 
   // Apply speed and volume to audio element
   useEffect(() => {
@@ -149,14 +238,30 @@ function ReaderPage() {
     }
   };
 
-  // Autoplay when new audio loads if we were playing
+  // Autoplay when new audio loads if we were playing — ElevenLabs only
   useEffect(() => {
+    if (ttsProvider !== "elevenlabs") return;
     if (audioUrl && playing && audioRef.current) {
       audioRef.current.play().catch(() => setPlaying(false));
     }
-  }, [audioUrl, playing]);
+  }, [audioUrl, playing, ttsProvider]);
 
   const togglePlay = () => {
+    if (ttsProvider === "browser") {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        setPlaying(true);
+      } else if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.pause();
+        setPlaying(false);
+      } else {
+        const text = chunks[chunkIdx] ?? "";
+        const wordSpans = buildWordsFromText(text);
+        setWords(wordSpans);
+        speakChunk(text, wordSpans);
+      }
+      return;
+    }
     if (!audioRef.current) return;
     if (audioRef.current.paused) {
       audioRef.current.play();
@@ -168,6 +273,7 @@ function ReaderPage() {
   };
 
   const seek = (delta: number) => {
+    if (ttsProvider === "browser") return;
     if (!audioRef.current) return;
     audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime + delta);
   };
@@ -208,6 +314,11 @@ function ReaderPage() {
               )}
             </Button>
             <SettingsPopover
+              ttsProvider={ttsProvider}
+              setTtsProvider={setTtsProvider}
+              browserVoices={browserVoices}
+              browserVoiceURI={browserVoiceURI}
+              setBrowserVoiceURI={setBrowserVoiceURI}
               voiceId={voiceId}
               setVoiceId={setVoiceId}
               speed={speed}
@@ -266,14 +377,20 @@ function ReaderPage() {
             >
               <ChevronRight className="w-5 h-5" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={() => seek(-15)} title="חזרה 15 שניות">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => seek(-15)}
+              title="חזרה 15 שניות"
+              disabled={ttsProvider === "browser"}
+            >
               <SkipBack className="w-5 h-5" />
             </Button>
             <Button
               size="icon"
               className="w-14 h-14 rounded-full"
               onClick={togglePlay}
-              disabled={loading || !audioUrl}
+              disabled={loading || (ttsProvider === "elevenlabs" && !audioUrl)}
             >
               {loading ? (
                 <Loader2 className="w-6 h-6 animate-spin" />
@@ -283,7 +400,13 @@ function ReaderPage() {
                 <Play className="w-6 h-6" />
               )}
             </Button>
-            <Button variant="ghost" size="icon" onClick={() => seek(15)} title="קדימה 15 שניות">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => seek(15)}
+              title="קדימה 15 שניות"
+              disabled={ttsProvider === "browser"}
+            >
               <SkipForward className="w-5 h-5" />
             </Button>
             <Button
@@ -446,6 +569,11 @@ function RenderTokens({
 
 /* ---------- Settings popover ---------- */
 function SettingsPopover(props: {
+  ttsProvider: TtsProvider;
+  setTtsProvider: (v: TtsProvider) => void;
+  browserVoices: SpeechSynthesisVoice[];
+  browserVoiceURI: string;
+  setBrowserVoiceURI: (v: string) => void;
   voiceId: string;
   setVoiceId: (v: string) => void;
   speed: number;
@@ -466,20 +594,69 @@ function SettingsPopover(props: {
       </PopoverTrigger>
       <PopoverContent className="w-80 space-y-4" align="end">
         <div>
-          <Label className="text-xs mb-1.5 block">קול הקריין</Label>
-          <Select value={props.voiceId} onValueChange={props.setVoiceId}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {HEBREW_VOICES.map((v) => (
-                <SelectItem key={v.id} value={v.id}>
-                  {v.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Label className="text-xs mb-1.5 block">שירות הקראה</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => props.setTtsProvider("elevenlabs")}
+              className={cn(
+                "h-9 rounded-md border-2 text-xs px-2 transition-colors",
+                props.ttsProvider === "elevenlabs" ? "border-primary bg-primary/10" : "border-border"
+              )}
+            >
+              ElevenLabs
+            </button>
+            <button
+              onClick={() => props.setTtsProvider("browser")}
+              className={cn(
+                "h-9 rounded-md border-2 text-xs px-2 transition-colors",
+                props.ttsProvider === "browser" ? "border-primary bg-primary/10" : "border-border"
+              )}
+            >
+              דפדפן (חינמי)
+            </button>
+          </div>
         </div>
+
+        {props.ttsProvider === "elevenlabs" ? (
+          <div>
+            <Label className="text-xs mb-1.5 block">קול הקריין</Label>
+            <Select value={props.voiceId} onValueChange={props.setVoiceId}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {HEBREW_VOICES.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : (
+          <div>
+            <Label className="text-xs mb-1.5 block">קול הקריין (דפדפן)</Label>
+            {props.browserVoices.length === 0 ? (
+              <p className="text-xs opacity-60">טוען קולות מהדפדפן...</p>
+            ) : (
+              <Select value={props.browserVoiceURI} onValueChange={props.setBrowserVoiceURI}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {props.browserVoices.map((v) => (
+                    <SelectItem key={v.voiceURI} value={v.voiceURI}>
+                      {v.name} ({v.lang})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <p className="text-xs opacity-50 mt-1">
+              Chrome/Edge מציע את קולות Google באיכות גבוהה
+            </p>
+          </div>
+        )}
 
         <div>
           <Label className="text-xs mb-1.5 flex justify-between">
