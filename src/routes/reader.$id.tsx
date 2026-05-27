@@ -71,8 +71,8 @@ function ReaderPage() {
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const shouldAutostartBrowserRef = useRef(false);
   // Always-fresh snapshot of values used inside event callbacks
-  const liveRef = useRef({ speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx });
-  liveRef.current = { speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx };
+  const liveRef = useRef({ speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx, playing });
+  liveRef.current = { speed, volume, browserVoices, browserVoiceURI, chunks, chunkIdx, playing };
 
   // Load book from storage
   useEffect(() => {
@@ -180,9 +180,12 @@ function ReaderPage() {
       })
       .catch((err) => {
         if (cancelled) return;
-        toast.error("שגיאה ביצירת ההקראה", {
-          description: String(err?.message ?? err),
+        // Auto-fallback to free browser TTS on any ElevenLabs failure
+        toast.info("עוברים להקראת דפדפן (חינמית)", {
+          description: "ElevenLabs לא זמין כרגע",
         });
+        shouldAutostartBrowserRef.current = liveRef.current.playing;
+        setTtsProvider("browser");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
