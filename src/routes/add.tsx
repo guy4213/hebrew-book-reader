@@ -240,8 +240,6 @@ function AddBookPage() {
           </Button>
         </div>
       </main>
-      {/* Suppress unused warning for step */}
-      <span className="hidden">{step}</span>
     </div>
   );
 }
