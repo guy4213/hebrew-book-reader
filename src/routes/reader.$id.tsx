@@ -63,9 +63,13 @@ function ReaderPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("plain");
   const [theme, setTheme] = useState<"cream" | "white" | "dark">("cream");
 
-  const [ttsProvider, setTtsProvider] = useState<TtsProvider>("elevenlabs");
+  const [ttsProvider, setTtsProvider] = useState<TtsProvider>(
+    () => (localStorage.getItem("ttsProvider") as TtsProvider | null) ?? "elevenlabs"
+  );
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [browserVoiceURI, setBrowserVoiceURI] = useState<string>("");
+
+  const ss = typeof window !== "undefined" ? window.speechSynthesis : null;
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -87,7 +91,8 @@ function ReaderPage() {
 
   // Start browser TTS for a chunk
   const speakChunk = (text: string, wordSpans: WordSpan[]) => {
-    window.speechSynthesis.cancel();
+    if (!ss) return;
+    ss.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "he-IL";
     const live = liveRef.current;
@@ -113,38 +118,43 @@ function ReaderPage() {
     };
 
     utteranceRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
+    ss.speak(utterance);
     setPlaying(true);
   };
 
+  // Persist provider choice
+  useEffect(() => {
+    localStorage.setItem("ttsProvider", ttsProvider);
+  }, [ttsProvider]);
+
   // Load browser voices
   useEffect(() => {
-    if (ttsProvider !== "browser") return;
+    if (ttsProvider !== "browser" || !ss) return;
     const loadVoices = () => {
-      const all = window.speechSynthesis.getVoices();
+      const all = ss.getVoices();
       const hebrew = all.filter(v => v.lang.startsWith("he"));
       const available = hebrew.length > 0 ? hebrew : all;
       setBrowserVoices(available);
       setBrowserVoiceURI(prev => prev || available[0]?.voiceURI || "");
     };
     loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-    return () => { window.speechSynthesis.onvoiceschanged = null; };
-  }, [ttsProvider]);
+    ss.onvoiceschanged = loadVoices;
+    return () => { ss.onvoiceschanged = null; };
+  }, [ttsProvider, ss]);
 
   // Stop browser TTS when switching to ElevenLabs
   useEffect(() => {
     if (ttsProvider === "elevenlabs") {
-      window.speechSynthesis.cancel();
+      ss?.cancel();
       setPlaying(false);
       setCurrentWordIdx(-1);
     }
-  }, [ttsProvider]);
+  }, [ttsProvider, ss]);
 
   // Browser TTS: compute words when chunk changes and auto-start if needed
   useEffect(() => {
     if (ttsProvider !== "browser" || !book || chunks.length === 0) return;
-    window.speechSynthesis.cancel();
+    ss?.cancel();
     setCurrentWordIdx(-1);
     setAudioUrl(null);
     const wordSpans = buildWordsFromText(chunks[chunkIdx]);
@@ -161,8 +171,8 @@ function ReaderPage() {
 
   // Cleanup browser TTS on unmount
   useEffect(() => {
-    return () => { window.speechSynthesis.cancel(); };
-  }, []);
+    return () => { ss?.cancel(); };
+  }, [ss]);
 
   // When chunk changes (or voice/speed), generate audio — ElevenLabs only
   useEffect(() => {
@@ -178,13 +188,15 @@ function ReaderPage() {
         setAudioUrl(res.audioUrl);
         setWords(res.words);
       })
-      .catch((err) => {
+      .catch(() => {
         if (cancelled) return;
         // Auto-fallback to free browser TTS on any ElevenLabs failure
         toast.info("עוברים להקראת דפדפן (חינמית)", {
-          description: "ElevenLabs לא זמין כרגע",
+          description: "ElevenLabs לא זמין — משתמשים בקול הדפדפן",
         });
         shouldAutostartBrowserRef.current = liveRef.current.playing;
+        // Persist so next load starts with browser TTS directly
+        localStorage.setItem("ttsProvider", "browser");
         setTtsProvider("browser");
       })
       .finally(() => {
@@ -251,11 +263,12 @@ function ReaderPage() {
 
   const togglePlay = () => {
     if (ttsProvider === "browser") {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
+      if (!ss) return;
+      if (ss.paused) {
+        ss.resume();
         setPlaying(true);
-      } else if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.pause();
+      } else if (ss.speaking) {
+        ss.pause();
         setPlaying(false);
       } else {
         const text = chunks[chunkIdx] ?? "";
