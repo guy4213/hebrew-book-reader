@@ -210,6 +210,18 @@ function AddBookPage() {
             <h2 className="text-lg font-bold">תוכן הספר להקראה</h2>
           </div>
 
+          <Button
+            onClick={() => fetchBookContent()}
+            disabled={fetching || !title.trim()}
+            className="w-full gap-2 mb-3"
+          >
+            {fetching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            שלוף את הספר אוטומטית לפי שם
+          </Button>
+          <p className="text-xs text-muted-foreground mb-4 text-center">
+            מחפש בפרויקט בן-יהודה ובמאגרי טקסטים בנחלת הכלל. ספרים מוגנים בזכויות יוצרים — העלו קובץ או צלמו עמודים.
+          </p>
+
           <div className="grid sm:grid-cols-2 gap-3 mb-4">
             <Button
               variant="outline"
