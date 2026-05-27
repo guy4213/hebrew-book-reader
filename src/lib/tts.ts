@@ -30,6 +30,18 @@ export const HEBREW_VOICES = [
   { id: "onwK4e9ZLuTAKqWW03F9", name: "דניאל" },
 ];
 
+// Microsoft neural Hebrew voices — free, no API key required
+export const EDGE_VOICES = [
+  { id: "he-IL-HilaNeural", name: "הילה (Microsoft)" },
+  { id: "he-IL-AvriNeural", name: "אברי (Microsoft)" },
+];
+
+export type EdgeWordBoundary = {
+  text: string;
+  timeStart: number;
+  timeEnd: number;
+};
+
 export async function generateTTS(
   text: string,
   voiceId: string,
@@ -78,6 +90,45 @@ function buildWords(text: string, alignment: Alignment): WordSpan[] {
     });
   }
   return words;
+}
+
+export async function generateEdgeTTS(
+  text: string,
+  voice: string,
+): Promise<TTSResult> {
+  const { data, error } = await supabase.functions.invoke("tts-edge", {
+    body: { text, voice, speed: 1.0 },
+  });
+  if (error) throw error;
+  if (!data?.audioBase64) throw new Error("לא התקבל קובץ אודיו");
+
+  const audioUrl = `data:audio/mpeg;base64,${data.audioBase64}`;
+  const boundaries: EdgeWordBoundary[] = data.words ?? [];
+  const words = buildWordsFromBoundaries(text, boundaries);
+  return {
+    audioUrl,
+    alignment: { characters: [], character_start_times_seconds: [], character_end_times_seconds: [] },
+    words,
+  };
+}
+
+function buildWordsFromBoundaries(text: string, boundaries: EdgeWordBoundary[]): WordSpan[] {
+  const words: WordSpan[] = [];
+  let searchFrom = 0;
+  for (const b of boundaries) {
+    if (!b.text) continue;
+    const idx = text.indexOf(b.text, searchFrom);
+    if (idx === -1) continue;
+    words.push({
+      text: b.text,
+      charStart: idx,
+      charEnd: idx + b.text.length,
+      timeStart: b.timeStart,
+      timeEnd: b.timeEnd,
+    });
+    searchFrom = idx + b.text.length;
+  }
+  return words.length > 0 ? words : buildWordsFromText(text);
 }
 
 export function buildWordsFromText(text: string): WordSpan[] {

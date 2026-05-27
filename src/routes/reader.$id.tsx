@@ -15,7 +15,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { library, type Book } from "@/lib/library";
-import { generateTTS, chunkText, buildWordsFromText, HEBREW_VOICES, type WordSpan } from "@/lib/tts";
+import { generateTTS, generateEdgeTTS, chunkText, buildWordsFromText, HEBREW_VOICES, EDGE_VOICES, type WordSpan } from "@/lib/tts";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -39,7 +39,7 @@ export const Route = createFileRoute("/reader/$id")({
 });
 
 type ViewMode = "book" | "plain";
-type TtsProvider = "elevenlabs" | "browser";
+type TtsProvider = "elevenlabs" | "edge" | "browser";
 
 function ReaderPage() {
   const { id } = useParams({ from: "/reader/$id" });
@@ -57,6 +57,7 @@ function ReaderPage() {
   const [currentWordIdx, setCurrentWordIdx] = useState(-1);
 
   const [voiceId, setVoiceId] = useState(HEBREW_VOICES[0].id);
+  const [edgeVoice, setEdgeVoice] = useState(EDGE_VOICES[0].id);
   const [speed, setSpeed] = useState(1);
   const [volume, setVolume] = useState(1);
   const [fontSize, setFontSize] = useState(20);
@@ -132,9 +133,9 @@ function ReaderPage() {
     return () => { window.speechSynthesis.onvoiceschanged = null; };
   }, [ttsProvider]);
 
-  // Stop browser TTS when switching to ElevenLabs
+  // Stop browser TTS when switching away from browser
   useEffect(() => {
-    if (ttsProvider === "elevenlabs") {
+    if (ttsProvider !== "browser") {
       window.speechSynthesis.cancel();
       setPlaying(false);
       setCurrentWordIdx(-1);
@@ -164,25 +165,30 @@ function ReaderPage() {
     return () => { window.speechSynthesis.cancel(); };
   }, []);
 
-  // When chunk changes (or voice/speed), generate audio — ElevenLabs only
+  // When chunk changes (or voice), generate audio — ElevenLabs and Edge providers
   useEffect(() => {
-    if (ttsProvider !== "elevenlabs" || !book || chunks.length === 0) return;
+    if ((ttsProvider !== "elevenlabs" && ttsProvider !== "edge") || !book || chunks.length === 0) return;
     let cancelled = false;
     setLoading(true);
     setAudioUrl(null);
     setWords([]);
     setCurrentWordIdx(-1);
-    generateTTS(chunks[chunkIdx], voiceId, 1) // speed handled client-side via playbackRate
+
+    const generate =
+      ttsProvider === "elevenlabs"
+        ? generateTTS(chunks[chunkIdx], voiceId, 1) // speed applied client-side via playbackRate
+        : generateEdgeTTS(chunks[chunkIdx], edgeVoice);
+
+    generate
       .then((res) => {
         if (cancelled) return;
         setAudioUrl(res.audioUrl);
         setWords(res.words);
       })
-      .catch((err) => {
+      .catch(() => {
         if (cancelled) return;
-        // Auto-fallback to free browser TTS on any ElevenLabs failure
         toast.info("עוברים להקראת דפדפן (חינמית)", {
-          description: "ElevenLabs לא זמין כרגע",
+          description: `${ttsProvider === "elevenlabs" ? "ElevenLabs" : "Edge TTS"} לא זמין כרגע`,
         });
         shouldAutostartBrowserRef.current = liveRef.current.playing;
         setTtsProvider("browser");
@@ -193,7 +199,7 @@ function ReaderPage() {
     return () => {
       cancelled = true;
     };
-  }, [chunks, chunkIdx, voiceId, book, ttsProvider]);
+  }, [chunks, chunkIdx, voiceId, edgeVoice, book, ttsProvider]);
 
   // Apply speed and volume to audio element
   useEffect(() => {
@@ -241,9 +247,9 @@ function ReaderPage() {
     }
   };
 
-  // Autoplay when new audio loads if we were playing — ElevenLabs only
+  // Autoplay when new audio loads if we were playing — ElevenLabs and Edge
   useEffect(() => {
-    if (ttsProvider !== "elevenlabs") return;
+    if (ttsProvider !== "elevenlabs" && ttsProvider !== "edge") return;
     if (audioUrl && playing && audioRef.current) {
       audioRef.current.play().catch(() => setPlaying(false));
     }
@@ -324,6 +330,8 @@ function ReaderPage() {
               setBrowserVoiceURI={setBrowserVoiceURI}
               voiceId={voiceId}
               setVoiceId={setVoiceId}
+              edgeVoice={edgeVoice}
+              setEdgeVoice={setEdgeVoice}
               speed={speed}
               setSpeed={setSpeed}
               volume={volume}
@@ -385,7 +393,7 @@ function ReaderPage() {
               size="icon"
               onClick={() => seek(-15)}
               title="חזרה 15 שניות"
-              disabled={ttsProvider === "browser"}
+              disabled={ttsProvider === "browser" || !audioUrl}
             >
               <SkipBack className="w-5 h-5" />
             </Button>
@@ -393,7 +401,7 @@ function ReaderPage() {
               size="icon"
               className="w-14 h-14 rounded-full"
               onClick={togglePlay}
-              disabled={loading || (ttsProvider === "elevenlabs" && !audioUrl)}
+              disabled={loading || ((ttsProvider === "elevenlabs" || ttsProvider === "edge") && !audioUrl)}
             >
               {loading ? (
                 <Loader2 className="w-6 h-6 animate-spin" />
@@ -408,7 +416,7 @@ function ReaderPage() {
               size="icon"
               onClick={() => seek(15)}
               title="קדימה 15 שניות"
-              disabled={ttsProvider === "browser"}
+              disabled={ttsProvider === "browser" || !audioUrl}
             >
               <SkipForward className="w-5 h-5" />
             </Button>
@@ -579,6 +587,8 @@ function SettingsPopover(props: {
   setBrowserVoiceURI: (v: string) => void;
   voiceId: string;
   setVoiceId: (v: string) => void;
+  edgeVoice: string;
+  setEdgeVoice: (v: string) => void;
   speed: number;
   setSpeed: (v: number) => void;
   volume: number;
@@ -598,26 +608,40 @@ function SettingsPopover(props: {
       <PopoverContent className="w-80 space-y-4" align="end">
         <div>
           <Label className="text-xs mb-1.5 block">שירות הקראה</Label>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-1.5">
             <button
               onClick={() => props.setTtsProvider("elevenlabs")}
               className={cn(
-                "h-9 rounded-md border-2 text-xs px-2 transition-colors",
+                "h-9 rounded-md border-2 text-xs px-1.5 transition-colors",
                 props.ttsProvider === "elevenlabs" ? "border-primary bg-primary/10" : "border-border"
               )}
             >
               ElevenLabs
             </button>
             <button
+              onClick={() => props.setTtsProvider("edge")}
+              className={cn(
+                "h-9 rounded-md border-2 text-xs px-1.5 transition-colors",
+                props.ttsProvider === "edge" ? "border-primary bg-primary/10" : "border-border"
+              )}
+            >
+              Microsoft AI
+            </button>
+            <button
               onClick={() => props.setTtsProvider("browser")}
               className={cn(
-                "h-9 rounded-md border-2 text-xs px-2 transition-colors",
+                "h-9 rounded-md border-2 text-xs px-1.5 transition-colors",
                 props.ttsProvider === "browser" ? "border-primary bg-primary/10" : "border-border"
               )}
             >
-              דפדפן (חינמי)
+              דפדפן
             </button>
           </div>
+          {props.ttsProvider === "edge" && (
+            <p className="text-xs opacity-50 mt-1.5">
+              Microsoft Neural TTS — חינמי, איכות גבוהה
+            </p>
+          )}
         </div>
 
         {props.ttsProvider === "elevenlabs" ? (
@@ -629,6 +653,22 @@ function SettingsPopover(props: {
               </SelectTrigger>
               <SelectContent>
                 {HEBREW_VOICES.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>
+                    {v.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : props.ttsProvider === "edge" ? (
+          <div>
+            <Label className="text-xs mb-1.5 block">קול הקריין (Microsoft)</Label>
+            <Select value={props.edgeVoice} onValueChange={props.setEdgeVoice}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EDGE_VOICES.map((v) => (
                   <SelectItem key={v.id} value={v.id}>
                     {v.name}
                   </SelectItem>
