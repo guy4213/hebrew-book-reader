@@ -15,7 +15,6 @@ export const Route = createFileRoute("/add")({
 
 function AddBookPage() {
   const navigate = useNavigate();
-  const [step, setStep] = useState<"identify" | "content">("identify");
 
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
